@@ -1,4 +1,4 @@
-﻿using ClosedXML.Utils;
+using ClosedXML.Utils;
 using DocumentFormat.OpenXml.Packaging;
 using System;
 using System.Collections.Generic;
@@ -8,6 +8,7 @@ using System.IO;
 using ClosedXML.Extensions;
 using static ClosedXML.Excel.XLWorkbook;
 using static ClosedXML.Excel.IO.OpenXmlConst;
+using System.Xml.Linq;
 
 namespace ClosedXML.Excel.IO
 {
@@ -40,23 +41,23 @@ namespace ClosedXML.Excel.IO
             var partStream = sharedStringTablePart.GetStream(FileMode.Create);
             using var xml = XmlWriter.Create(partStream, settings);
 
-            xml.WriteStartDocument();
+            var sst = new XElement(XMain2006SsNs + "sst");
 
-            // Due to streaming and XLWorkbook structure, we don't know count before strings are written.
-            // Attributes count and uniqueCount are optional thus are omitted.
-            xml.WriteStartElement("x", "sst", Main2006SsNs);
+            int countOfTextStringsInWorkbook = 0;
 
             foreach (var c in workbook.Worksheets.Cast<XLWorksheet>().SelectMany(w => w.Internals.CellsCollection.GetCells(HasSharedString)))
             {
+                countOfTextStringsInWorkbook++;
                 if (c.HasRichText)
                 {
                     if (newRichStrings.TryGetValue(c.GetRichText(), out int id))
                         c.SharedStringId = id;
                     else
                     {
-                        xml.WriteStartElement("si", Main2006SsNs);
-                        TextSerializer.WriteRichTextElements(xml, c, context);
-                        xml.WriteEndElement(); // si
+                        var si = new XElement(XMain2006SsNs + "si");
+                        si.AddRichTextElements(c, context);
+
+                        sst.Add(si);
 
                         newRichStrings.Add(c.GetRichText(), stringId);
                         c.SharedStringId = stringId;
@@ -71,15 +72,15 @@ namespace ClosedXML.Excel.IO
                         c.SharedStringId = id;
                     else
                     {
-                        xml.WriteStartElement("si", Main2006SsNs);
-                        xml.WriteStartElement("t", Main2006SsNs);
+                        var t = new XElement(XMain2006SsNs + "t");
                         var sharedString = value;
                         if (!sharedString.Trim().Equals(sharedString))
-                            xml.WritePreserveSpaceAttr();
+                            t.AddPreserveSpaceAttr();
 
-                        xml.WriteString(XmlEncoder.EncodeString(sharedString));
-                        xml.WriteEndElement(); // t
-                        xml.WriteEndElement(); // si
+                        t.SetValue(XmlEncoder.EncodeString(sharedString));
+
+                        var si = new XElement(XMain2006SsNs + "si", t);
+                        sst.Add(si);
 
                         newStrings.Add(value, stringId);
                         c.SharedStringId = stringId;
@@ -89,7 +90,12 @@ namespace ClosedXML.Excel.IO
                 }
             }
 
-            xml.WriteEndElement(); // SharedStringTable
+            sst.Add(new XAttribute("count", countOfTextStringsInWorkbook));
+            sst.Add(new XAttribute("uniqueCount", sst.Elements().Count()));
+
+            var sharedStrings = new XDocument(new XDeclaration(version: "1.0", encoding: "utf-8", standalone: "yes"), sst);
+
+            sharedStrings.WriteTo(xml);
             xml.Close();
         }
     }
